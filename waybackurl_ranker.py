@@ -8,7 +8,7 @@ from bs4 import BeautifulSoup
 import threading
 
 # === Version ===
-VERSION = "1.2.2"
+VERSION = "1.3.0"
 
 # === ASCII Art Banner ===
 ASCII_BANNER = rf"""
@@ -37,7 +37,7 @@ KEYWORD_SCORES = {
     2:  ['page', 'search', 'q'],
 }
 
-# Adjusted HTTP status scores as requested
+# Updated HTTP status scores with 200 worth 2 points instead of 5
 STATUS_SCORE = {
     200: 2,
     401: 4,
@@ -52,20 +52,22 @@ SUSPICIOUS_EXTENSIONS = ['.bak', '.sql', '.zip', '.env', '.log']
 EXTENSION_SCORE = 4
 HTML_INDICATORS = ['login', 'admin panel', 'reset password', 'dashboard', 'token']
 
+# JS Patterns and weights combined under one dict
 JS_PATTERNS = {
-    5: [r'(?i)apikey\s*[:=]\s*["\']?[A-Za-z0-9_\-]{10,}["\']?'],
-    5: [r'(?i)auth(?:orization)?_token\s*[:=]\s*["\']?[A-Za-z0-9_\-]{10,}["\']?'],
-    4: [r'(?i)(username|user|email)\s*[:=]\s*["\']?[a-z0-9._%+-]+@?[a-z0-9.-]*["\']?'],
-    4: [r'(?i)password\s*[:=]\s*["\']?.{4,}["\']?'],
+    5: [
+        r'(?i)apikey\s*[:=]\s*["\']?[A-Za-z0-9_\-]{10,}["\']?',
+        r'(?i)auth(?:orization)?_token\s*[:=]\s*["\']?[A-Za-z0-9_\-]{10,}["\']?'
+    ],
+    4: [
+        r'(?i)(username|user|email)\s*[:=]\s*["\']?[a-z0-9._%+-]+@?[a-z0-9.-]*["\']?',
+        r'(?i)password\s*[:=]\s*["\']?.{4,}["\']?'
+    ],
     3: [r'(?i)(https?:\/\/)?(www\.)?api\.[\w\/\.-]+'],
     2: [r'(?i)(client_id|client_secret)\s*[:=]'],
 }
 
-# === Whitelist of known common JS libraries to skip JS content scanning ===
-JS_LIB_WHITELIST = [
-    'jquery', 'react', 'angular', 'vue', 'lodash', 'bootstrap', 'moment',
-    'd3', 'axios', 'backbone', 'underscore'
-]
+# Known JS libraries to exclude from JS pattern matches (prevent false positives)
+KNOWN_JS_LIBS = ['jquery', 'react', 'vue', 'angular', 'lodash', 'backbone', 'ember', 'moment', 'd3']
 
 # === Thread-safe tracking of unreachable domains ===
 bad_domains = set()
@@ -78,20 +80,22 @@ def keyword_score(url):
     parsed = urlparse(url)
     params = parse_qs(parsed.query)
 
-    # Improved query string key matching to only match whole keys, not substrings
+    # Improved matching: check whole param keys and path segments exactly for sensitive keywords
+    # Check params for exact keyword match (case-insensitive)
     for weight, keywords in KEYWORD_SCORES.items():
         for key in params:
-            if key.lower() in keywords:
+            lower_key = key.lower()
+            if any(lower_key == k for k in keywords):
                 score += weight
                 reasons.append(f"param:{key} (+{weight})")
 
+    # Check path segments for keywords exactly (not substrings)
+    path_segments = [seg.lower() for seg in parsed.path.strip('/').split('/')]
     for weight, keywords in KEYWORD_SCORES.items():
-        for keyword in keywords:
-            # Match whole words in path (e.g., /q/ or /q= but not jquery)
-            path_lower = parsed.path.lower()
-            if re.search(r'(?<!\w){}(?!\w)'.format(re.escape(keyword)), path_lower):
+        for seg in path_segments:
+            if seg in keywords:
                 score += weight
-                reasons.append(f"path:{keyword} (+{weight})")
+                reasons.append(f"path:{seg} (+{weight})")
 
     if any(url.lower().endswith(ext) for ext in SUSPICIOUS_EXTENSIONS):
         score += EXTENSION_SCORE
@@ -103,7 +107,8 @@ def keyword_score(url):
                 score += 3
                 reasons.append("high-entropy param value (+3)")
 
-    depth = max(0, len(parsed.path.strip('/').split('/')) - 2)
+    # path depth = number of segments minus 2, minimum 0
+    depth = max(0, len(path_segments) - 2)
     if depth:
         score += depth
         reasons.append(f"path depth +{depth}")
@@ -112,16 +117,16 @@ def keyword_score(url):
 
 # === JavaScript File Inspection ===
 def inspect_js(url):
-    # Skip JS scanning if URL contains any whitelisted library keyword
-    lower_url = url.lower()
-    if any(lib in lower_url for lib in JS_LIB_WHITELIST):
-        return 0, []  # Skip scanning, no JS score
-
     score = 0
     reasons = []
     try:
         resp = requests.get(url, timeout=5, headers={'User-Agent': 'Mozilla/5.0'})
         if resp.status_code == 200 and 'javascript' in resp.headers.get('Content-Type', ''):
+            # Exclude known libraries based on url filename to reduce false positives
+            lower_url = url.lower()
+            if any(lib in lower_url for lib in KNOWN_JS_LIBS):
+                return 0, []  # skip scoring JS libraries
+
             js = resp.text
             for weight, patterns in JS_PATTERNS.items():
                 for pat in patterns:
@@ -215,6 +220,7 @@ def main():
     parser.add_argument("--no-color", action="store_true", help="Disable color output")
     parser.add_argument("--threads", type=int, default=10, help="Number of concurrent threads (default: 10)")
     parser.add_argument("--verbose", action="store_true", help="Show verbose scoring reasons for each URL")
+    parser.add_argument("--output", type=str, default=None, help="Output file path to save results")
 
     args = parser.parse_args()
 
@@ -249,14 +255,6 @@ def main():
 
     filtered.sort(key=lambda r: (-r["score"], r["url"]))
 
-    print(f"\n{'Score':<7} {'Status':<7} URL")
-    print("-" * 120)
-    for r in filtered:
-        status = r['status'] if r['status'] is not None else '-'
-        score = r['score']
-        print(f"{colorize(str(score), score, not args.no_color):<7} {status:<7} {r['url']}")
-        if args.verbose:
-            print(f"{'':<15} {r['description']}")
-
-if __name__ == "__main__":
-    main()
+    output_lines = []
+    header = f"{'Score':<7} {'Status':<7} URL"
+    output_lines.append(header)
