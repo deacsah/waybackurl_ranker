@@ -56,5 +56,4 @@ $ python3 waybackurl_ranker.py -h
 Usage: waybackurl_ranker.py [-h] [--min-score MIN_SCORE] [--only-200] [--no-reqs] [--no-color]
                             [--threads THREADS]
                             file
-waybackurl_ranker.py: error: the following arguments are required: file
 ```
