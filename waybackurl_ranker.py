@@ -8,7 +8,7 @@ from bs4 import BeautifulSoup
 import threading
 
 # === Version ===
-VERSION = "1.2.1"
+VERSION = "1.2.2"
 
 # === ASCII Art Banner ===
 ASCII_BANNER = rf"""
@@ -37,8 +37,9 @@ KEYWORD_SCORES = {
     2:  ['page', 'search', 'q'],
 }
 
+# Adjusted HTTP status scores as requested
 STATUS_SCORE = {
-    200: 5,
+    200: 2,
     401: 4,
     403: 3,
     301: 2,
@@ -60,6 +61,12 @@ JS_PATTERNS = {
     2: [r'(?i)(client_id|client_secret)\s*[:=]'],
 }
 
+# === Whitelist of known common JS libraries to skip JS content scanning ===
+JS_LIB_WHITELIST = [
+    'jquery', 'react', 'angular', 'vue', 'lodash', 'bootstrap', 'moment',
+    'd3', 'axios', 'backbone', 'underscore'
+]
+
 # === Thread-safe tracking of unreachable domains ===
 bad_domains = set()
 domain_lock = threading.Lock()
@@ -71,15 +78,18 @@ def keyword_score(url):
     parsed = urlparse(url)
     params = parse_qs(parsed.query)
 
+    # Improved query string key matching to only match whole keys, not substrings
     for weight, keywords in KEYWORD_SCORES.items():
         for key in params:
-            if any(k in key.lower() for k in keywords):
+            if key.lower() in keywords:
                 score += weight
                 reasons.append(f"param:{key} (+{weight})")
 
     for weight, keywords in KEYWORD_SCORES.items():
         for keyword in keywords:
-            if keyword in parsed.path.lower():
+            # Match whole words in path (e.g., /q/ or /q= but not jquery)
+            path_lower = parsed.path.lower()
+            if re.search(r'(?<!\w){}(?!\w)'.format(re.escape(keyword)), path_lower):
                 score += weight
                 reasons.append(f"path:{keyword} (+{weight})")
 
@@ -102,6 +112,11 @@ def keyword_score(url):
 
 # === JavaScript File Inspection ===
 def inspect_js(url):
+    # Skip JS scanning if URL contains any whitelisted library keyword
+    lower_url = url.lower()
+    if any(lib in lower_url for lib in JS_LIB_WHITELIST):
+        return 0, []  # Skip scanning, no JS score
+
     score = 0
     reasons = []
     try:
