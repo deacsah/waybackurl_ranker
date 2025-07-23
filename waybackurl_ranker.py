@@ -69,6 +69,31 @@ JS_PATTERNS = {
 # Known JS libraries to exclude from JS pattern matches (prevent false positives)
 KNOWN_JS_LIBS = ['jquery', 'react', 'vue', 'angular', 'lodash', 'backbone', 'ember', 'moment', 'd3']
 
+# === Extended Sensitive Regex Patterns ===
+# (AWS keys, private keys, Google API keys, etc.)
+EXTENDED_SENSITIVE_PATTERNS = {
+    10: [
+        r'(?i)aws_access_key_id\s*=\s*[A-Z0-9]{20}',                # AWS Access Key ID
+        r'(?i)aws_secret_access_key\s*=\s*[A-Za-z0-9/+=]{40}',     # AWS Secret Access Key
+        r'-----BEGIN PRIVATE KEY-----',                             # PEM private key start
+        r'-----BEGIN RSA PRIVATE KEY-----',
+        r'-----BEGIN EC PRIVATE KEY-----',
+        r'AIza[0-9A-Za-z-_]{35}',                                   # Google API key
+        r'sk_live_[0-9a-zA-Z]{24}',                                 # Stripe secret key
+        r'-----BEGIN OPENSSH PRIVATE KEY-----',
+        r'ghp_[0-9a-zA-Z]{36}',                                     # GitHub personal access token
+    ],
+    8: [
+        r'(?i)private[-_]?key\s*=\s*["\']?.+["\']?',               # generic private key assign
+        r'sk_test_[0-9a-zA-Z]{24}',                                # Stripe test secret key
+        r'(?:ssh-rsa|ssh-ed25519) AAAA[0-9A-Za-z+/]+[=]{0,3}',     # SSH public key format
+    ],
+    5: [
+        r'(?i)secret\s*=\s*["\']?.+["\']?',                        # generic secret assign
+        r'(?:AIza|AIza)[A-Za-z0-9-_]{35}',                         # Google API key variants
+    ],
+}
+
 # === Thread-safe tracking of unreachable domains ===
 bad_domains = set()
 domain_lock = threading.Lock()
@@ -113,6 +138,13 @@ def keyword_score(url):
         score += depth
         reasons.append(f"path depth +{depth}")
 
+    # Check the full URL string against extended sensitive regex patterns
+    for weight, patterns in EXTENDED_SENSITIVE_PATTERNS.items():
+        for pattern in patterns:
+            if re.search(pattern, url):
+                score += weight
+                reasons.append(f"extended sensitive pattern ({pattern}) +{weight}")
+
     return score, reasons
 
 # === JavaScript File Inspection ===
@@ -133,6 +165,14 @@ def inspect_js(url):
                     if re.search(pat, js):
                         score += weight
                         reasons.append(f"JS match ({pat}) +{weight}")
+
+            # Also check extended sensitive patterns in JS content
+            for weight, patterns in EXTENDED_SENSITIVE_PATTERNS.items():
+                for pattern in patterns:
+                    if re.search(pattern, js):
+                        score += weight
+                        reasons.append(f"JS extended sensitive pattern ({pattern}) +{weight}")
+
     except:
         pass
     return score, reasons
@@ -157,6 +197,13 @@ def get_http_score(url, analyze_html=False):
             if any(term in text for term in HTML_INDICATORS):
                 content_mod += 3
                 reasons.append("HTML indicator match (+3)")
+
+            # Check extended sensitive patterns in page text (HTML content)
+            for weight, patterns in EXTENDED_SENSITIVE_PATTERNS.items():
+                for pattern in patterns:
+                    if re.search(pattern, resp.text):
+                        content_mod += weight
+                        reasons.append(f"HTML extended sensitive pattern ({pattern}) +{weight}")
 
         return status_mod + content_mod, reasons, resp.status_code
 
