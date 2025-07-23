@@ -1,6 +1,6 @@
 # waybackurl_ranker.py
 
-**Version:** 1.2.1
+**Version:** 1.3.0
 
 ## Overview
 
@@ -72,3 +72,9 @@ Usage: waybackurl_ranker.py [-h] [--min-score MIN_SCORE] [--only-200] [--no-reqs
 - Known JavaScript libraries like jQuery, React, Vue, etc., are excluded from JS content inspection to reduce false positives.
 - Domains that fail connection or timeout requests are skipped in subsequent requests to speed up scanning.
 - Scoring is heuristic and may not always reflect actual sensitivity, use with discretion.
+- Also checks for keywords found here: https://github.com/gigachad80/grep-backURLs/blob/main/grep_keywords.txt
+
+## Thanks
+
+- [tomnomnom](https://github.com/tomnomnom) for [waybackurls](https://github.com/tomnomnom/waybackurls)
+- [gigachad80](https://github.com/gigachad80) for [https://github.com/gigachad80/grep-backURLs/blob/main/grep_keywords.txt](https://github.com/gigachad80/grep-backURLs/blob/main/grep_keywords.txt)
