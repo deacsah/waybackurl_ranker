@@ -23,33 +23,52 @@ With multithreading support, custom filters, and colorized output for fast triag
 
 ## Features
 
-- **Keyword-based scoring**
-- **Suspicious file extension detection**
-- **Entropy-based value matching**
-- **HTML page content analysis**
-- **JavaScript file analysis**
-- **HTTP status scoring**
-- **Unreachable domain tracking**
-- **Verbose mode for score explanation**
-- **Multi-threaded URL processing**
-- **Colorized CLI output**
-- **Filtering options by score and status**
+- Keyword-based scoring
+- Suspicious file extension detection
+- Entropy-based value matching
+- HTML page content analysis
+- JavaScript file analysis
+- HTTP status scoring
+- Unreachable domain tracking
+- Verbose mode for score explanation
+- Multi-threaded URL processing
+- Colorized CLI output
+- Filtering options by score and status
 
 ---
 
 ## Usage
 
 ```bash
-$ python3 waybackurl_ranker.py -h                            
+$  python3 waybackurl_ranker.py -h                                     
 
 +--------------------------------------------------+
 |      WAYBACKURL RANKER — URL Risk Classifier     |
-|                    v1.2.1                        |
+|                    v1.3.0                        |
 +--------------------------------------------------+
 
-Usage: waybackurl_ranker.py [-h] [--min-score MIN_SCORE] [--only-200] [--no-reqs] [--no-color] [--threads THREADS] [--verbose] file
-
+Usage: waybackurl_ranker.py [-h] [--min-score MIN_SCORE] [--only-200] [--no-reqs] [--no-color]
+                            [--threads THREADS] [--verbose] [--output OUTPUT]
+                            file
 ```
 
 ---
 
+## Options
+
+- -h, --help : Show help message and exit
+- --min-score N : Show only URLs with score >= N (default: 0)
+- --only-200 : Show only URLs that returned HTTP 200
+- --no-reqs : Skip HTTP requests (only keyword scoring)
+- --no-color : Disable colored output
+- --threads N : Number of concurrent threads (default: 10)
+- --verbose : Show detailed scoring reasons per URL
+- --output FILE : Save output to specified file instead of printing to console
+
+--- 
+
+## Notes
+
+- Known JavaScript libraries like jQuery, React, Vue, etc., are excluded from JS content inspection to reduce false positives.
+- Domains that fail connection or timeout requests are skipped in subsequent requests to speed up scanning.
+- Scoring is heuristic and may not always reflect actual sensitivity, use with discretion.
