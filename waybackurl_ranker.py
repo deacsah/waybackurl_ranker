@@ -258,3 +258,36 @@ def main():
     output_lines = []
     header = f"{'Score':<7} {'Status':<7} URL"
     output_lines.append(header)
+    output_lines.append("-" * 120)
+
+    for r in filtered:
+        status = r['status'] if r['status'] is not None else '-'
+        score = r['score']
+        line = f"{str(score):<7} {status:<7} {r['url']}"
+        if not args.no_color:
+            line = colorize(line, score, True)
+        output_lines.append(line)
+        if args.verbose:
+            verbose_line = f"{'':<15} {r['description']}"
+            if not args.no_color:
+                verbose_line = colorize(verbose_line, score, True)
+            output_lines.append(verbose_line)
+
+    output_text = "\n".join(output_lines)
+
+    if args.output:
+        try:
+            with open(args.output, "w", encoding="utf-8") as f_out:
+                # Remove ANSI color codes for clean file output
+                ansi_escape = re.compile(r'\x1B\[[0-?]*[ -/]*[@-~]')
+                clean_text = ansi_escape.sub('', output_text)
+                f_out.write(clean_text)
+            print(f"[+] Results saved to {args.output}")
+        except Exception as e:
+            print(f"[!] Failed to write output file: {e}")
+    else:
+        print(output_text)
+
+
+if __name__ == "__main__":
+    main()
