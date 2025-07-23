@@ -41,6 +41,7 @@ Install dependencies via pip:
 
 ```bash
 pip install requests beautifulsoup4
+```
 
 ## Usage
 
@@ -56,4 +57,4 @@ Usage: waybackurl_ranker.py [-h] [--min-score MIN_SCORE] [--only-200] [--no-reqs
                             [--threads THREADS]
                             file
 waybackurl_ranker.py: error: the following arguments are required: file
-
+```
