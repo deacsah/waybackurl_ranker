@@ -2,15 +2,22 @@ import re
 import requests
 import sys
 import argparse
+import json
 from urllib.parse import urlparse, parse_qs
 from concurrent.futures import ThreadPoolExecutor
 from bs4 import BeautifulSoup
 import threading
+import os
 
-# === Version ===
-VERSION = "1.3.0"
+VERSION = "1.4.1"
 
-# === ASCII Art Banner ===
+# === ANSI Colors ===
+RED = "\033[91m"
+YELLOW = "\033[93m"
+GREEN = "\033[92m"
+RESET = "\033[0m"
+
+# === ASCII Banner ===
 ASCII_BANNER = rf"""
 +--------------------------------------------------+
 |      WAYBACKURL RANKER — URL Risk Classifier     |
@@ -18,205 +25,176 @@ ASCII_BANNER = rf"""
 +--------------------------------------------------+
 """
 
-# === ANSI Color Codes ===
-RED = "\033[91m"
-YELLOW = "\033[93m"
-GREEN = "\033[92m"
-RESET = "\033[0m"
-
-# === Scoring Definitions ===
-KEYWORD_SCORES = {
-    10: ['password', 'passwd', 'auth_token'],
-    9:  ['token', 'apikey', 'secret', 'jwt', 'access_token', 'authorization'],
-    8:  ['email', 'ssn', 'dob', 'phone', 'account_number'],
-    7:  ['card', 'cvv', 'iban', 'credit'],
-    6:  ['admin', 'config', 'debug', 'root', 'sso'],
-    5:  ['staging', 'dev', 'test', 'local'],
-    4:  ['file', 'doc', 'pdf', 'download', 'backup', 'export'],
-    3:  ['name', 'id', 'user', 'username', 'userid', 'login'],
-    2:  ['page', 'search', 'q'],
-}
-
-# Updated HTTP status scores with 200 worth 2 points instead of 5
-STATUS_SCORE = {
-    200: 2,
-    401: 4,
-    403: 3,
-    301: 2,
-    302: 2,
-    500: 1,
-    404: -3,
-}
-
-SUSPICIOUS_EXTENSIONS = ['.bak', '.sql', '.zip', '.env', '.log']
-EXTENSION_SCORE = 4
-HTML_INDICATORS = ['login', 'admin panel', 'reset password', 'dashboard', 'token']
-
-# JS Patterns and weights combined under one dict
-JS_PATTERNS = {
-    5: [
-        r'(?i)apikey\s*[:=]\s*["\']?[A-Za-z0-9_\-]{10,}["\']?',
-        r'(?i)auth(?:orization)?_token\s*[:=]\s*["\']?[A-Za-z0-9_\-]{10,}["\']?'
-    ],
-    4: [
-        r'(?i)(username|user|email)\s*[:=]\s*["\']?[a-z0-9._%+-]+@?[a-z0-9.-]*["\']?',
-        r'(?i)password\s*[:=]\s*["\']?.{4,}["\']?'
-    ],
-    3: [r'(?i)(https?:\/\/)?(www\.)?api\.[\w\/\.-]+'],
-    2: [r'(?i)(client_id|client_secret)\s*[:=]'],
-}
-
-# Known JS libraries to exclude from JS pattern matches (prevent false positives)
-KNOWN_JS_LIBS = ['jquery', 'react', 'vue', 'angular', 'lodash', 'backbone', 'ember', 'moment', 'd3']
-
-# === Extended Sensitive Regex Patterns ===
-# (AWS keys, private keys, Google API keys, etc.)
-EXTENDED_SENSITIVE_PATTERNS = {
-    10: [
-        r'(?i)aws_access_key_id\s*=\s*[A-Z0-9]{20}',                # AWS Access Key ID
-        r'(?i)aws_secret_access_key\s*=\s*[A-Za-z0-9/+=]{40}',     # AWS Secret Access Key
-        r'-----BEGIN PRIVATE KEY-----',                             # PEM private key start
-        r'-----BEGIN RSA PRIVATE KEY-----',
-        r'-----BEGIN EC PRIVATE KEY-----',
-        r'AIza[0-9A-Za-z-_]{35}',                                   # Google API key
-        r'sk_live_[0-9a-zA-Z]{24}',                                 # Stripe secret key
-        r'-----BEGIN OPENSSH PRIVATE KEY-----',
-        r'ghp_[0-9a-zA-Z]{36}',                                     # GitHub personal access token
-    ],
-    8: [
-        r'(?i)private[-_]?key\s*=\s*["\']?.+["\']?',               # generic private key assign
-        r'sk_test_[0-9a-zA-Z]{24}',                                # Stripe test secret key
-        r'(?:ssh-rsa|ssh-ed25519) AAAA[0-9A-Za-z+/]+[=]{0,3}',     # SSH public key format
-    ],
-    5: [
-        r'(?i)secret\s*=\s*["\']?.+["\']?',                        # generic secret assign
-        r'(?:AIza|AIza)[A-Za-z0-9-_]{35}',                         # Google API key variants
-    ],
-}
-
-# === Thread-safe tracking of unreachable domains ===
+# === Globals for scoring ===
+CONFIG = {}
 bad_domains = set()
 domain_lock = threading.Lock()
 
-# === Keyword-Based Score ===
+
+# === Load Scoring Config ===
+def load_config(path):
+    global CONFIG
+    try:
+        with open(path, "r") as f:
+            CONFIG = json.load(f)
+    except Exception as e:
+        print(f"[!] Failed to load config: {e}")
+        sys.exit(1)
+
+
+# === Keyword Scoring ===
 def keyword_score(url):
     score = 0
-    reasons = []
+    tags = []
     parsed = urlparse(url)
     params = parse_qs(parsed.query)
+    path_segments = [seg.lower() for seg in parsed.path.strip("/").split("/")]
 
-    # Improved matching: check whole param keys and path segments exactly for sensitive keywords
-    # Check params for exact keyword match (case-insensitive)
-    for weight, keywords in KEYWORD_SCORES.items():
+    matched_segments = set()
+
+    for weight, keywords in CONFIG.get("KEYWORD_SCORES", {}).items():
+        int_weight = int(weight)
+        # Parameter keys
         for key in params:
-            lower_key = key.lower()
-            if any(lower_key == k for k in keywords):
-                score += weight
-                reasons.append(f"param:{key} (+{weight})")
+            if key.lower() in keywords:
+                score += int_weight
+                tags.append(f"param:{key} (+{weight})")
 
-    # Check path segments for keywords exactly (not substrings)
-    path_segments = [seg.lower() for seg in parsed.path.strip('/').split('/')]
-    for weight, keywords in KEYWORD_SCORES.items():
+        # Full path segments
         for seg in path_segments:
-            if seg in keywords:
-                score += weight
-                reasons.append(f"path:{seg} (+{weight})")
+            if seg in keywords and seg not in matched_segments:
+                score += int_weight
+                tags.append(f"path token:{seg} (+{weight})")
+                matched_segments.add(seg)
 
-    if any(url.lower().endswith(ext) for ext in SUSPICIOUS_EXTENSIONS):
-        score += EXTENSION_SCORE
-        reasons.append(f"suspicious extension (+{EXTENSION_SCORE})")
+        # Subtoken matching (avoiding double-counting)
+        for seg in path_segments:
+            if seg in matched_segments:
+                continue
+            for subtoken in re.split(r'[-_]', seg):
+                if subtoken in keywords:
+                    score += int_weight
+                    tags.append(f"path subtoken:{subtoken} (+{weight})")
 
+    # Extension-based scoring
+    for ext, ext_score in CONFIG.get("EXTENSION_SCORES", {}).items():
+        if url.lower().endswith(ext):
+            score += ext_score
+            tags.append(f"extension:{ext} (+{ext_score})")
+
+    # High-entropy param values
     for values in params.values():
         for v in values:
             if re.match(r'^[A-Za-z0-9+/=]{20,}$', v):
                 score += 3
-                reasons.append("high-entropy param value (+3)")
+                tags.append("high-entropy param value (+3)")
 
-    # path depth = number of segments minus 2, minimum 0
+    # Path depth
     depth = max(0, len(path_segments) - 2)
     if depth:
         score += depth
-        reasons.append(f"path depth +{depth}")
+        tags.append(f"path depth +{depth}")
 
-    # Check the full URL string against extended sensitive regex patterns
-    for weight, patterns in EXTENDED_SENSITIVE_PATTERNS.items():
+    # Extended regex-based patterns
+    for weight, patterns in CONFIG.get("EXTENDED_SENSITIVE_PATTERNS", {}).items():
         for pattern in patterns:
             if re.search(pattern, url):
-                score += weight
-                reasons.append(f"extended sensitive pattern ({pattern}) +{weight}")
+                score += int(weight)
+                tags.append(f"pattern:{pattern} (+{weight})")
 
-    return score, reasons
+    return score, tags
 
-# === JavaScript File Inspection ===
+
+# === JavaScript Scanning ===
 def inspect_js(url):
     score = 0
-    reasons = []
+    tags = []
     try:
         resp = requests.get(url, timeout=5, headers={'User-Agent': 'Mozilla/5.0'})
         if resp.status_code == 200 and 'javascript' in resp.headers.get('Content-Type', ''):
-            # Exclude known libraries based on url filename to reduce false positives
-            lower_url = url.lower()
-            if any(lib in lower_url for lib in KNOWN_JS_LIBS):
-                return 0, []  # skip scoring JS libraries
-
             js = resp.text
-            for weight, patterns in JS_PATTERNS.items():
+            for weight, patterns in CONFIG.get("JS_PATTERNS", {}).items():
                 for pat in patterns:
                     if re.search(pat, js):
-                        score += weight
-                        reasons.append(f"JS match ({pat}) +{weight}")
-
-            # Also check extended sensitive patterns in JS content
-            for weight, patterns in EXTENDED_SENSITIVE_PATTERNS.items():
+                        score += int(weight)
+                        tags.append(f"JS match ({pat}) +{weight}")
+            for weight, patterns in CONFIG.get("EXTENDED_SENSITIVE_PATTERNS", {}).items():
                 for pattern in patterns:
                     if re.search(pattern, js):
-                        score += weight
-                        reasons.append(f"JS extended sensitive pattern ({pattern}) +{weight}")
-
+                        score += int(weight)
+                        tags.append(f"JS sensitive pattern ({pattern}) +{weight}")
     except:
         pass
-    return score, reasons
+    return score, tags
 
-# === HTTP Request + Content Analysis with Domain Skipping ===
-def get_http_score(url, analyze_html=False):
+
+# === HTTP and HTML analysis ===
+def get_http_score(url):
     domain = urlparse(url).netloc
-
     with domain_lock:
         if domain in bad_domains:
             return 0, [], None
 
     try:
-        resp = requests.get(url, timeout=5, allow_redirects=True, headers={'User-Agent': 'Mozilla/5.0'})
-        status_mod = STATUS_SCORE.get(resp.status_code, 0)
-        reasons = [f"HTTP {resp.status_code} (+{status_mod})"] if status_mod else []
-        content_mod = 0
+        resp = requests.get(url, timeout=5, headers={'User-Agent': 'Mozilla/5.0'})
+        code = resp.status_code
+        score = CONFIG.get("STATUS_SCORES", {}).get(str(code), 0)
+        tags = [f"HTTP {code} (+{score})"] if score else []
 
-        if analyze_html and 'text/html' in resp.headers.get('Content-Type', ''):
-            soup = BeautifulSoup(resp.text, 'html.parser')
-            text = soup.get_text().lower()
-            if any(term in text for term in HTML_INDICATORS):
-                content_mod += 3
-                reasons.append("HTML indicator match (+3)")
+        if 'text/html' in resp.headers.get('Content-Type', ''):
+            text = BeautifulSoup(resp.text, 'html.parser').get_text().lower()
+            # Support HTML_INDICATORS as dict or list
+            html_indicators = CONFIG.get("HTML_INDICATORS", {})
+            if isinstance(html_indicators, dict):
+                for keyword, val in html_indicators.items():
+                    if keyword.lower() in text:
+                        score += val
+                        tags.append(f"HTML indicator match '{keyword}' (+{val})")
+            else:
+                for ind in html_indicators:
+                    if ind.lower() in text:
+                        score += 3
+                        tags.append(f"HTML indicator match (+3)")
 
-            # Check extended sensitive patterns in page text (HTML content)
-            for weight, patterns in EXTENDED_SENSITIVE_PATTERNS.items():
+            for weight, patterns in CONFIG.get("EXTENDED_SENSITIVE_PATTERNS", {}).items():
                 for pattern in patterns:
                     if re.search(pattern, resp.text):
-                        content_mod += weight
-                        reasons.append(f"HTML extended sensitive pattern ({pattern}) +{weight}")
+                        score += int(weight)
+                        tags.append(f"HTML sensitive pattern ({pattern}) +{weight}")
 
-        return status_mod + content_mod, reasons, resp.status_code
+        return score, tags, code
 
-    except requests.exceptions.RequestException as e:
-        if isinstance(e, (requests.exceptions.ConnectionError, requests.exceptions.Timeout)):
-            with domain_lock:
-                bad_domains.add(domain)
-        return -5, ["request failed (-5)"], None
+    except requests.exceptions.RequestException:
+        with domain_lock:
+            bad_domains.add(domain)
+        # Removed failed request penalty per your instructions
+        return 0, [], None
 
-# === Colorize output based on score ===
-def colorize(text, score, use_color=True):
-    if not use_color:
-        return text
+
+# === URL Processor ===
+def process_url(url, use_reqs=True):
+    base_score, base_tags = keyword_score(url)
+    http_score, http_tags, status = (0, [], None)
+    js_score, js_tags = (0, [])
+
+    if use_reqs:
+        http_score, http_tags, status = get_http_score(url)
+        if url.lower().endswith(".js"):
+            js_score, js_tags = inspect_js(url)
+
+    total = base_score + http_score + js_score
+    tags = base_tags + http_tags + js_tags
+
+    return {
+        "url": url,
+        "score": total,
+        "status": status,
+        "tags": tags
+    }
+
+
+# === Color Output ===
+def colorize(text, score):
     if score >= 20:
         return f"{RED}{text}{RESET}"
     elif score >= 10:
@@ -224,114 +202,69 @@ def colorize(text, score, use_color=True):
     else:
         return f"{GREEN}{text}{RESET}"
 
-# === Process a single URL ===
-def process_url(url, use_requests=True, analyze_html=False):
-    base_score, base_reasons = keyword_score(url)
-    http_score, http_reasons, status = (0, [], None)
-    js_score, js_reasons = (0, [])
 
-    if use_requests:
-        http_score, http_reasons, status = get_http_score(url, analyze_html)
-        if url.lower().endswith(".js"):
-            js_score, js_reasons = inspect_js(url)
-
-    total = base_score + http_score + js_score
-    reasons = base_reasons + http_reasons + js_reasons
-
-    return {
-        "url": url,
-        "score": total,
-        "status": status,
-        "description": "; ".join(reasons) if reasons else "-"
-    }
-
-# === Main function ===
+# === Main ===
 def main():
     print(ASCII_BANNER)
 
-    class BannerHelpFormatter(argparse.HelpFormatter):
-        def add_usage(self, usage, actions, groups, prefix=None):
-            return super().add_usage(usage, actions, groups, prefix=prefix or "Usage: ")
-
-    parser = argparse.ArgumentParser(
-        description=f"Rank potentially sensitive URLs based on keywords, HTTP status, JS and HTML analysis. v{VERSION}",
-        formatter_class=BannerHelpFormatter,
-        add_help=False
-    )
-
-    parser.add_argument('-h', '--help', action='store_true', help='Show this help message and exit')
-    parser.add_argument("file", help="Input file containing one URL per line")
-    parser.add_argument("--min-score", type=int, default=0, help="Only show URLs with score >= this value")
-    parser.add_argument("--only-200", action="store_true", help="Only show URLs that return HTTP 200")
-    parser.add_argument("--no-reqs", action="store_true", help="Don't send HTTP requests (keyword-based only)")
-    parser.add_argument("--no-color", action="store_true", help="Disable color output")
-    parser.add_argument("--threads", type=int, default=10, help="Number of concurrent threads (default: 10)")
-    parser.add_argument("--verbose", action="store_true", help="Show verbose scoring reasons for each URL")
-    parser.add_argument("--output", type=str, default=None, help="Output file path to save results")
-
+    parser = argparse.ArgumentParser()
+    parser.add_argument("file", help="Input file with URLs")
+    parser.add_argument("--config", default="config.json", help="Path to JSON scoring config")
+    parser.add_argument("--min-score", type=int, default=0)
+    parser.add_argument("--only-200", action="store_true")
+    parser.add_argument("--no-reqs", action="store_true")
+    parser.add_argument("--no-color", action="store_true")
+    parser.add_argument("--threads", type=int, default=10)
+    parser.add_argument("--json", action="store_true")
+    parser.add_argument("--verbose", action="store_true")
+    parser.add_argument("--output", help="Output file path")
     args = parser.parse_args()
 
-    if args.help:
-        parser.print_help()
-        sys.exit(0)
+    load_config(args.config)
 
     try:
-        with open(args.file, "r") as f:
+        with open(args.file) as f:
             urls = [line.strip() for line in f if line.strip()]
     except Exception as e:
-        print(f"[!] Failed to read file: {e}")
+        print(f"[!] Failed to read input: {e}")
         sys.exit(1)
 
     results = []
-
     with ThreadPoolExecutor(max_workers=args.threads) as executor:
-        futures = [
-            executor.submit(process_url, url, not args.no_reqs, analyze_html=True)
-            for url in urls
-        ]
+        futures = [executor.submit(process_url, u, not args.no_reqs) for u in urls]
         for future in futures:
             try:
                 results.append(future.result())
             except Exception as e:
                 print(f"[!] Error processing URL: {e}")
 
-    filtered = [
-        r for r in results
-        if r["score"] >= args.min_score and (not args.only_200 or r["status"] == 200)
-    ]
-
-    filtered.sort(key=lambda r: (-r["score"], r["url"]))
+    filtered = [r for r in results if r['score'] >= args.min_score and (not args.only_200 or r['status'] == 200)]
+    filtered.sort(key=lambda r: (-r['score'], r['url']))
 
     output_lines = []
-    header = f"{'Score':<7} {'Status':<7} URL"
-    output_lines.append(header)
-    output_lines.append("-" * 120)
-
-    for r in filtered:
-        status = r['status'] if r['status'] is not None else '-'
-        score = r['score']
-        line = f"{str(score):<7} {status:<7} {r['url']}"
-        if not args.no_color:
-            line = colorize(line, score, True)
-        output_lines.append(line)
+    if args.json:
+        output_data = json.dumps(filtered, indent=2)
+        output_lines.append(output_data)
+    else:
         if args.verbose:
-            verbose_line = f"{'':<15} {r['description']}"
-            if not args.no_color:
-                verbose_line = colorize(verbose_line, score, True)
-            output_lines.append(verbose_line)
+            header = f"{'Score':<7} {'Status':<7} {'Scoring':<60} URL"
+        else:
+            header = f"{'Score':<7} {'Status':<7} URL"
+
+        output_lines.append(header)
+        output_lines.append("-" * 100)
+        for r in filtered:
+            if args.verbose:
+                tag_str = "; ".join(r['tags'])
+                line = f"{r['score']:<7} {str(r['status'] or '-'): <7} {tag_str:<60} {r['url']}"
+            else:
+                line = f"{r['score']:<7} {str(r['status'] or '-'): <7} {r['url']}"
+            output_lines.append(colorize(line, r['score']) if not args.no_color else line)
 
     output_text = "\n".join(output_lines)
-
     if args.output:
-        try:
-            with open(args.output, "w", encoding="utf-8") as f_out:
-                # Remove ANSI color codes for clean file output
-                ansi_escape = re.compile(r'\x1B\[[0-?]*[ -/]*[@-~]')
-                clean_text = ansi_escape.sub('', output_text)
-                f_out.write(clean_text)
-            print(f"[+] Results saved to {args.output}")
-        except Exception as e:
-            print(f"[!] Failed to write output file: {e}")
+        with open(args.output, "w") as out:
+            out.write(output_text)
     else:
         print(output_text)
 
