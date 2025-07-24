@@ -9,7 +9,7 @@ from bs4 import BeautifulSoup
 import threading
 import os
 
-VERSION = "1.4.1"
+VERSION = "1.4.2"
 
 # === ANSI Colors ===
 RED = "\033[91m"
@@ -30,7 +30,6 @@ CONFIG = {}
 bad_domains = set()
 domain_lock = threading.Lock()
 
-
 # === Load Scoring Config ===
 def load_config(path):
     global CONFIG
@@ -40,7 +39,6 @@ def load_config(path):
     except Exception as e:
         print(f"[!] Failed to load config: {e}")
         sys.exit(1)
-
 
 # === Keyword Scoring ===
 def keyword_score(url):
@@ -104,13 +102,12 @@ def keyword_score(url):
 
     return score, tags
 
-
 # === JavaScript Scanning ===
-def inspect_js(url):
+def inspect_js(url, user_agent, follow_redirects):
     score = 0
     tags = []
     try:
-        resp = requests.get(url, timeout=5, headers={'User-Agent': 'Mozilla/5.0'})
+        resp = requests.get(url, timeout=5, headers={'User-Agent': user_agent}, allow_redirects=follow_redirects)
         if resp.status_code == 200 and 'javascript' in resp.headers.get('Content-Type', ''):
             js = resp.text
             for weight, patterns in CONFIG.get("JS_PATTERNS", {}).items():
@@ -127,16 +124,15 @@ def inspect_js(url):
         pass
     return score, tags
 
-
 # === HTTP and HTML analysis ===
-def get_http_score(url):
+def get_http_score(url, user_agent, follow_redirects):
     domain = urlparse(url).netloc
     with domain_lock:
         if domain in bad_domains:
             return 0, [], None
 
     try:
-        resp = requests.get(url, timeout=5, headers={'User-Agent': 'Mozilla/5.0'})
+        resp = requests.get(url, timeout=5, headers={'User-Agent': user_agent}, allow_redirects=follow_redirects)
         code = resp.status_code
         score = CONFIG.get("STATUS_SCORES", {}).get(str(code), 0)
         tags = [f"HTTP {code} (+{score})"] if score else []
@@ -168,17 +164,16 @@ def get_http_score(url):
             bad_domains.add(domain)
         return 0, [], None
 
-
 # === URL Processor ===
-def process_url(url, use_reqs=True):
+def process_url(url, use_reqs, user_agent, follow_redirects):
     base_score, base_tags = keyword_score(url)
     http_score, http_tags, status = (0, [], None)
     js_score, js_tags = (0, [])
 
     if use_reqs:
-        http_score, http_tags, status = get_http_score(url)
+        http_score, http_tags, status = get_http_score(url, user_agent, follow_redirects)
         if url.lower().endswith(".js"):
-            js_score, js_tags = inspect_js(url)
+            js_score, js_tags = inspect_js(url, user_agent, follow_redirects)
 
     total = base_score + http_score + js_score
     tags = base_tags + http_tags + js_tags
@@ -190,7 +185,6 @@ def process_url(url, use_reqs=True):
         "tags": tags
     }
 
-
 # === Color Output ===
 def colorize(text, score, use_color=True):
     if not use_color:
@@ -201,7 +195,6 @@ def colorize(text, score, use_color=True):
         return f"{YELLOW}{text}{RESET}"
     else:
         return f"{GREEN}{text}{RESET}"
-
 
 # === Main ===
 def main():
@@ -218,6 +211,8 @@ def main():
     parser.add_argument("--json", action="store_true")
     parser.add_argument("--verbose", action="store_true")
     parser.add_argument("--output", help="Output file path")
+    parser.add_argument("--follow-redirects", action="store_true", help="Follow HTTP redirects")
+    parser.add_argument("--user-agent", default="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0.0.0 Safari/537.36", help="Custom User-Agent header")
     args = parser.parse_args()
 
     load_config(args.config)
@@ -231,7 +226,7 @@ def main():
 
     results = []
     with ThreadPoolExecutor(max_workers=args.threads) as executor:
-        futures = [executor.submit(process_url, u, not args.no_reqs) for u in urls]
+        futures = [executor.submit(process_url, u, not args.no_reqs, args.user_agent, args.follow_redirects) for u in urls]
         for future in futures:
             try:
                 results.append(future.result())
@@ -259,7 +254,7 @@ def main():
                 line = f"{r['score']:<7} {str(r['status'] or '-'): <7} {tag_str:<60} {r['url']}"
             else:
                 line = f"{r['score']:<7} {str(r['status'] or '-'): <7} {r['url']}"
-            output_lines.append(colorize(line, r['score'], use_color=not args.no_color and not args.output))
+            output_lines.append(colorize(line, r['score'], use_color=not args.no_color and not args.output and not args.json))
 
     output_text = "\n".join(output_lines)
     if args.output:
@@ -267,7 +262,6 @@ def main():
             out.write(output_text)
     else:
         print(output_text)
-
 
 if __name__ == "__main__":
     main()
