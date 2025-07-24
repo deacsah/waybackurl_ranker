@@ -19,7 +19,6 @@ The tool assigns a risk score to each URL by analyzing:
 
 With multithreading support, custom filters, and colorized output for fast triage.
 
-
 ## Features
 
 - Keyword-based scoring
