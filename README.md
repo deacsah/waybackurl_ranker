@@ -60,6 +60,9 @@ options:
   --json
   --verbose
   --output OUTPUT       Output file path
+  --follow-redirects    Follow HTTP redirects
+  --user-agent USER_AGENT
+                        Custom User-Agent header
 
 ```
 
@@ -75,6 +78,8 @@ options:
 - --json : Output results in JSON format.
 - --verbose : Show detailed scoring reasons and breakdown for each URL.
 - --output OUTPUT : Save the results to the specified file path instead of printing to standard output.
+- --follow-redirects : Follows HTTP redirects when making HTTP requests
+- --user-agent USER_AGENT : Custom User-Agent header. Defaults to a recent Chrome UA.
 
 ## Notes
 
