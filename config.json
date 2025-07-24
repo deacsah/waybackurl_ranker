@@ -1,0 +1,40 @@
+{
+  "KEYWORD_SCORES": {
+    "10": ["password", "passwd", "auth_token"],
+    "9": ["token", "apikey", "secret", "jwt", "access_token", "authorization"],
+    "8": ["email", "ssn", "dob", "phone", "account_number"],
+    "7": ["card", "cvv", "iban", "credit"],
+    "6": ["admin", "config", "configuration", "debug", "root", "sso"],
+    "5": ["staging", "dev", "test", "local"],
+    "4": ["file", "doc", "pdf", "download", "backup", "export"],
+    "3": ["name", "id", "user", "username", "userid", "login"],
+    "2": ["page", "search", "q"]
+  },
+  "EXTENSION_SCORES": {
+    ".bak": 8,
+    ".sql": 8,
+    ".env": 8,
+    ".log": 6,
+    ".pdf": 6,
+    ".txt": 6
+  },
+  "STATUS_SCORES": {
+    "200": 2,
+    "403": 3,
+    "500": 4
+  },
+  "HTML_INDICATORS": {
+    "login": 2,
+    "dashboard": 3,
+    "admin": 4,
+    "panel": 3
+  },
+  "EXTENDED_SENSITIVE_PATTERNS": {
+    "9": ["(?i)api[-_]?key", "(?i)secret[-_]?key"],
+    "8": ["(?i)access[-_]?token"],
+    "7": ["(?i)client[-_]?id"]
+  },
+  "JS_PATTERNS": {
+    "9": ["(?i)apikey\\s*[:=]", "(?i)auth\\s*[:=]"]
+  }
+}
