@@ -143,7 +143,6 @@ def get_http_score(url):
 
         if 'text/html' in resp.headers.get('Content-Type', ''):
             text = BeautifulSoup(resp.text, 'html.parser').get_text().lower()
-            # Support HTML_INDICATORS as dict or list
             html_indicators = CONFIG.get("HTML_INDICATORS", {})
             if isinstance(html_indicators, dict):
                 for keyword, val in html_indicators.items():
@@ -167,7 +166,6 @@ def get_http_score(url):
     except requests.exceptions.RequestException:
         with domain_lock:
             bad_domains.add(domain)
-        # Removed failed request penalty per your instructions
         return 0, [], None
 
 
@@ -194,7 +192,9 @@ def process_url(url, use_reqs=True):
 
 
 # === Color Output ===
-def colorize(text, score):
+def colorize(text, score, use_color=True):
+    if not use_color:
+        return text
     if score >= 20:
         return f"{RED}{text}{RESET}"
     elif score >= 10:
@@ -259,7 +259,7 @@ def main():
                 line = f"{r['score']:<7} {str(r['status'] or '-'): <7} {tag_str:<60} {r['url']}"
             else:
                 line = f"{r['score']:<7} {str(r['status'] or '-'): <7} {r['url']}"
-            output_lines.append(colorize(line, r['score']) if not args.no_color else line)
+            output_lines.append(colorize(line, r['score'], use_color=not args.no_color and not args.output))
 
     output_text = "\n".join(output_lines)
     if args.output:
