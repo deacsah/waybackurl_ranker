@@ -26,8 +26,8 @@ This helps prioritize URLs that require urgent manual inspection and triage, spe
     $ python3 waybackurl_ranker.py -h
 
     +--------------------------------------------------+
-    |      ☆･ﾟ✧ WAYBACKURL RANKER ✧ﾟ･☆      |
-    |       URL Risk Classifier & Score v2.1.2          |
+    |       WAYBACKURL RANKER                          |
+    |       URL Risk Classifier & Score v2.1.2         |
     +--------------------------------------------------+
 
     usage: waybackurl_ranker.py [-h] [--config CONFIG] [--min-score MIN_SCORE] [--only-200]
