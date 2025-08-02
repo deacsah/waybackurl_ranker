@@ -1,94 +1,92 @@
-# waybackurl_ranker.py
+# WaybackURL Ranker (waybackurl_ranker.py)
 
-**Version:** 1.4.1
+**Version:** 2.1.2
 
 ## Overview
 
-**WaybackURL Ranker (WBU Ranker)** is a Python 3 utility designed to help prioritize large lists of URLs obtained from [waybackurls](https://github.com/tomnomnom/waybackurls) based on the risk of sensitive information leakage.
+**WaybackURL Ranker (WBU Ranker)** is a Python 3 utility designed to prioritize large URL lists—especially those obtained from [waybackurls](https://github.com/tomnomnom/waybackurls)—by scoring them according to potential risk of sensitive information leakage.
 
-The tool assigns a risk score to each URL by analyzing:
+The tool analyzes URLs with heuristic scoring based on:
 
-- URL parameters and paths for sensitive keywords (e.g., `password`, `token`, `apikey`).
-- Suspicious file extensions (e.g., `.env`, `.bak`, `.sql`, `.zip`, `.log`).
-- Base64/high-entropy strings in query parameters.
-- Path depth (e.g., `/admin/login/reset` scores higher).
-- HTTP response status codes (e.g., 200 OK increases score, 404 decreases).
-- JavaScript file scanning for secrets/tokens if URL ends in `.js`.
-- HTML content scraping for sensitive indicators (e.g., login forms, dashboards).
-- Detection of unreachable domains to avoid repeat wasted requests.
+- URL parameters and paths containing sensitive keywords (e.g., `password`, `token`, `apikey`).
+- Suspicious file extensions (like `.env`, `.bak`, `.sql`, `.zip`, `.log`).
+- High-entropy (Base64 or similar) strings found in query parameter values.
+- Path depth (longer, nested paths score higher).
+- HTTP response status codes (e.g., 200 OK adds score; 404 or errors decrease).
+- JavaScript file content scanning to detect secrets/tokens if URLs end with `.js` (needs improvement). 
+- HTML content scraping for indicators like login forms, dashboards, or error messages.
+- Tracking and excluding unreachable or slow-responding domains to avoid wasted retries.
+- Batch processing for large inputs with memory-efficient sorting of results.
+- Multithreaded URL processing for improved speed.
 
-With multithreading support, custom filters, and colorized output for fast triage.
-
-## Features
-
-- Keyword-based scoring
-- Suspicious file extension detection
-- Entropy-based value matching
-- HTML page content analysis
-- JavaScript file analysis
-- HTTP status scoring
-- Unreachable domain tracking
-- Verbose mode for score explanation
-- Multi-threaded URL processing
-- Colorized CLI output
-- Filtering options by score and status
+This helps prioritize URLs that require urgent manual inspection and triage, speeding up security assessments and reconnaissance.
 
 ## Usage
 
-```bash
-$ python3 waybackurl_ranker.py -h                                         
+    $ python3 waybackurl_ranker.py -h
 
-+--------------------------------------------------+
-|      WAYBACKURL RANKER — URL Risk Classifier     |
-|                    v1.4.1                        |
-+--------------------------------------------------+
+    +--------------------------------------------------+
+    |      ☆･ﾟ✧ WAYBACKURL RANKER ✧ﾟ･☆      |
+    |       URL Risk Classifier & Score v2.1.2          |
+    +--------------------------------------------------+
 
-usage: waybackurl_ranker.py [-h] [--config CONFIG] [--min-score MIN_SCORE] [--only-200] [--no-reqs] [--no-color] [--threads THREADS] [--json] [--verbose] [--output OUTPUT]
-                            file
+    usage: waybackurl_ranker.py [-h] [--config CONFIG] [--min-score MIN_SCORE] [--only-200]
+                                [--no-reqs] [--no-color] [--threads THREADS] [--json] [--verbose]
+                                [--output OUTPUT] [--follow-redirects] [--user-agent USER_AGENT]
+                                [--batch-size BATCH_SIZE] file
 
-positional arguments:
-  file                  Input file with URLs
+    positional arguments:
+      file                  Input file containing URLs, one per line.
 
-options:
-  -h, --help            show this help message and exit
-  --config CONFIG       Path to JSON scoring config
-  --min-score MIN_SCORE
-  --only-200
-  --no-reqs
-  --no-color
-  --threads THREADS
-  --json
-  --verbose
-  --output OUTPUT       Output file path
-  --follow-redirects    Follow HTTP redirects
-  --user-agent USER_AGENT
-                        Custom User-Agent header
+    optional arguments:
+      -h, --help            show this help message and exit
+      --config CONFIG       Path to scoring config JSON file (default: config.json).
+      --min-score MIN_SCORE Only output URLs scoring equal or above this value (default: 0).
+      --only-200            Only output URLs with HTTP status code 200.
+      --no-reqs             Disable live HTTP requests; score based on URL analysis only.
+      --no-color            Disable colored output (useful for plain text logs).
+      --threads THREADS     Number of concurrent worker threads (default: 10).
+      --json                Output results in JSON format.
+      --verbose             Show detailed scoring tags for each URL.
+      --output OUTPUT       Output results to specified file instead of stdout.
+      --follow-redirects    Follow HTTP redirects on requests (default: off).
+      --user-agent USER_AGENT  Custom User-Agent header for HTTP requests (default: recent Chrome).
+      --batch-size BATCH_SIZE  Process URLs in memory-efficient batches of this size (disabled by default).
 
-```
 
-## Options
+## Example Usage
 
-- -h, --help : Show the help message with usage instructions and exit.
-- --config CONFIG : Specify the path to the JSON configuration file that defines scoring rules and patterns.
-- --min-score MIN_SCORE : Only display URLs with a score greater than or equal to this minimum threshold.
-- --only-200 : Filter results to show only URLs that returned an HTTP 200 status code.
-- --no-reqs : Disable sending HTTP requests; scoring will be based solely on URL keyword analysis.
-- --no-color : Disable colored output in the terminal for better compatibility or plain text logging.
-- --threads THREADS : Set the number of concurrent worker threads for processing URLs (default is 10).
-- --json : Output results in JSON format.
-- --verbose : Show detailed scoring reasons and breakdown for each URL.
-- --output OUTPUT : Save the results to the specified file path instead of printing to standard output.
-- --follow-redirects : Follows HTTP redirects when making HTTP requests
-- --user-agent USER_AGENT : Custom User-Agent header. Defaults to a recent Chrome UA.
+Single-threaded keyword scoring only with batch processing and output to file:
+
+    python3 waybackurl_ranker.py urls.txt --no-reqs --batch-size 5000 --output results.txt
+
+Process all URLs with live HTTP requests, follow redirects, verbose output, and save JSON output:
+
+    python3 waybackurl_ranker.py urls.txt --follow-redirects --verbose --json --output output.json
+
+Filter to only high-risk URLS with score ≥ 10 and HTTP 200 status:
+
+    python3 waybackurl_ranker.py urls.txt --min-score 10 --only-200
 
 ## Notes
 
-- Known JavaScript libraries like jQuery, React, Vue, etc., are excluded from JS content inspection to reduce false positives.
-- Domains that fail connection or timeout requests are skipped in subsequent requests to speed up scanning.
-- Scoring is heuristic and may not always reflect actual sensitivity, use with discretion.
-- Also checks for keywords found here: https://github.com/gigachad80/grep-backURLs/blob/main/grep_keywords.txt
+- Batch size is **disabled by default** to process all URLs in memory with global sorting. Use batch mode for large files to avoid memory issues.
+- Sorting after batch processing ensures global ordering of results by decreasing risk score.
+- Large input files will be processed in chunks, with progress counters shown on the terminal.
+- Unreachable domains are tracked to skip repeated failed requests.
+- Known popular JavaScript libs (e.g., jQuery, React) are excluded from JS pattern matching to reduce false positives.
+- Scoring is heuristic and optimized for triage, not definitive vulnerability detection. Always verify manually.
+- Configuration is fully customizable via JSON to add keywords, regexes, and scoring weights.
 
-## Thanks
+## Installation
+
+- Just clone or download!
+- Requires Python 3.7+
+- Dependencies (install via pip): pip install requests beautifulsoup4
+
+## Thanks & Credits
 
 - [tomnomnom](https://github.com/tomnomnom) for [waybackurls](https://github.com/tomnomnom/waybackurls)
-- [gigachad80](https://github.com/gigachad80) for [https://github.com/gigachad80/grep-backURLs/blob/main/grep_keywords.txt](https://github.com/gigachad80/grep-backURLs/blob/main/grep_keywords.txt)
+- [gigachad80](https://github.com/gigachad80) for keyword inspiration from [grep-backURLs](https://github.com/gigachad80/grep-backURLs/blob/main/grep_keywords.txt)
+
+<3
