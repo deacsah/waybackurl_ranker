@@ -4,7 +4,7 @@
 
 ## Overview
 
-**WaybackURL Ranker (WBU Ranker)** is a Python 3 utility designed to prioritize large URL lists—especially those obtained from [waybackurls](https://github.com/tomnomnom/waybackurls)—by scoring them according to potential risk of sensitive information leakage.
+**WaybackURL Ranker (WBUR)** is a Python 3 utility designed to prioritize large URL lists—especially those obtained from [waybackurls](https://github.com/tomnomnom/waybackurls)—by scoring them according to potential risk of sensitive information leakage.
 
 The tool analyzes URLs with heuristic scoring based on:
 
