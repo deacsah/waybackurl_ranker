@@ -3,6 +3,7 @@ import requests
 import sys
 import argparse
 import json
+import heapq
 from urllib.parse import urlparse, parse_qs
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from bs4 import BeautifulSoup
@@ -10,7 +11,7 @@ import threading
 import os
 import tempfile
 
-VERSION = "2.1.2"
+VERSION = "2.2.1"
 
 # === ANSI Colors ===
 RED = "\033[91m"
@@ -34,6 +35,7 @@ bad_domains = set()
 domain_lock = threading.Lock()
 
 # --- Utility functions for colored feedback/progress ---
+
 def print_settings_feedback(args, total_urls):
     print(YELLOW + "="*64 + RESET)
     print(YELLOW + "WAYBACKURL RANKER SETTINGS" + RESET)
@@ -47,28 +49,34 @@ def print_settings_feedback(args, total_urls):
         print(f"- User-Agent:     {CYAN}{args.user_agent}{RESET}")
         print(f"- Follow redirects: {GREEN if args.follow_redirects else RED}{'YES' if args.follow_redirects else 'NO'}{RESET}")
     print(f"- Output:         {CYAN}{'stdout' if not args.output else args.output}{RESET}")
-    print(f"- Colors:         {GREEN if (not args.no_color and not args.output and not args.json) else RED}{'ENABLED' if (not args.no_color and not args.output and not args.json) else 'DISABLED'}{RESET}")
+    print(f"- Colors:         {GREEN if (not args.no_color) else RED}{'ENABLED' if (not args.no_color) else 'DISABLED'}{RESET}")
     print(f"- Min score:      {CYAN}{args.min_score}{RESET}")
     print(f"- Only 200:       {GREEN if args.only_200 else RED}{'YES (--only-200)' if args.only_200 else 'NO'}{RESET}")
     print(f"- Format:         {CYAN}{'JSON (--json)' if args.json else 'Text'}{RESET}")
     print(f"- Verbose:        {GREEN if args.verbose else RED}{'YES (--verbose)' if args.verbose else 'NO'}{RESET}")
     if args.batch_size is not None:
         batches = int((total_urls + args.batch_size - 1) / args.batch_size)
+        # Removed trailing newline here to avoid blank line
         print(f"- Batch size:     {CYAN}{args.batch_size}{RESET} (--batch-size, {CYAN}{batches}{RESET} batches)")
-        print(f"{CYAN}-> Batched processing enabled. Will sort output file after processing.{RESET}\n")
+        print(f"{CYAN}-> Batched processing enabled with external merge sort to handle large input.{RESET}")
     else:
-        print(f"{CYAN}-> Classic mode: All URLs processed and sorted in memory for global sort order.{RESET}\n")
+        print(f"{CYAN}-> Classic mode: All URLs processed and sorted in memory for global sort order.{RESET}")
     print(YELLOW + "="*64 + RESET)
     if args.batch_size:
         print(f"{CYAN}[*] Processing {total_urls} URLs in batches of {args.batch_size}, {args.threads} worker threads.{RESET}")
-        print(f"{CYAN}[*] Output will be sorted after all batches.{RESET}")
+        print(f"{CYAN}[*] Output will be merged from sorted chunks after batch processing.{RESET}")
     else:
         print(f"{CYAN}[*] Processing all {total_urls} URLs in memory (classic mode, globally sorted).{RESET}")
     print(flush=True)
 
 def print_progress(step_label, current, total):
-    percent = (current / total) * 100 if total else 100
-    sys.stdout.write(f"\r{CYAN}{step_label}{RESET} {current} of {total} ({percent:.2f}%)")
+    try:
+        percent = (current / total) * 100 if total else 100
+        status = f"{current} of {total} ({percent:.2f}%)"
+    except Exception:
+        # If total is not numeric (like "?" etc), fallback gracefully
+        status = f"{current} of {total}"
+    sys.stdout.write(f"\r{CYAN}{step_label}{RESET} {status}")
     sys.stdout.flush()
 
 def load_config(path):
@@ -106,7 +114,6 @@ def keyword_score(url):
                 if subtoken in keywords:
                     score += int_weight
                     tags.append(f"path subtoken:{subtoken} (+{weight})")
-
     for ext, ext_score in CONFIG.get("EXTENSION_SCORES", {}).items():
         if url.lower().endswith(ext):
             score += ext_score
@@ -228,7 +235,7 @@ def output_results_batch(results_batch, verbose, use_color, output_file=None):
             line = f"{r['score']:<7} {str(r['status'] or '-'): <7} {tag_str:<60} {r['url']}"
         else:
             line = f"{r['score']:<7} {str(r['status'] or '-'): <7} {r['url']}"
-        if use_color and not output_file:
+        if use_color:
             line = colorize(line, r['score'], use_color=True)
         lines.append(line)
     output_text = "\n".join(lines)
@@ -238,65 +245,129 @@ def output_results_batch(results_batch, verbose, use_color, output_file=None):
     else:
         print(output_text)
 
-# ======= SORTING FUNCTIONS WITH PROGRESS BAR ==========
+def parse_text_line(line):
+    fields = line.strip('\n').split()
+    try:
+        score = int(fields[0])
+    except Exception:
+        score = -float('inf')
+    url = fields[-1] if len(fields) > 0 else ""
+    return (score, url, line)
 
-def sort_text_output(input_file_path, output_file_path):
-    """Sort by score and then URL for plain text output."""
-    def parse_line(line):
-        fields = line.strip('\n').split()
-        try:
-            score = int(fields[0])
-            url = fields[-1]
-        except Exception:
-            return (-float('inf'), "", line)
-        return (score, url, line)
-    # Count and read lines for progress
-    with open(input_file_path, "r", encoding="utf-8") as infile:
-        all_lines = [line for line in infile if line.strip() and not set(line.strip()) == {"-"} and not line.lower().startswith("score")]
-    total_lines = len(all_lines)
-    lines = []
-    for idx, line in enumerate(all_lines, 1):
-        lines.append(parse_line(line))
-        if idx % 1000 == 0 or idx == total_lines:
-            print_progress("Reading for sorting:", idx, total_lines)
-    print()
-    lines.sort(key=lambda x: (-x[0], x[1]))
-    with open(output_file_path, "w", encoding="utf-8") as outfile:
-        outfile.write(f"{'Score':<7} {'Status':<7} URL\n")
-        outfile.write("-" * 100 + "\n")
-        for i, (_, _, line) in enumerate(lines, 1):
-            outfile.write(line)
-            if not line.endswith("\n"): outfile.write("\n")
-            if i % 1000 == 0 or i == total_lines:
-                print_progress("Writing sorted file:", i, total_lines)
-    print()
+def write_sorted_chunk_file_text(results, file_path, verbose):
+    results.sort(key=lambda r: (-r['score'], r['url']))
+    with open(file_path, "w", encoding="utf-8") as f:
+        f.write(f"{'Score':<7} {'Status':<7} URL\n")
+        f.write("-" * 100 + "\n")
+        for r in results:
+            if verbose:
+                tag_str = "; ".join(r['tags'])
+                line = f"{r['score']:<7} {str(r['status'] or '-'): <7} {tag_str:<60} {r['url']}\n"
+            else:
+                line = f"{r['score']:<7} {str(r['status'] or '-'): <7} {r['url']}\n"
+            f.write(line)
 
-def sort_json_output(input_file_path, output_file_path):
-    """Sort newline-delimited JSON by score/url."""
-    objects = []
-    with open(input_file_path, "r", encoding="utf-8") as infile:
-        all_lines = [line for line in infile if line.strip() and not line.strip() in ("[", "]", ",")]
-    total_lines = len(all_lines)
-    for idx, line in enumerate(all_lines, 1):
-        try:
-            obj = json.loads(line.rstrip(","))
-            objects.append(obj)
-        except Exception:
+def write_sorted_chunk_file_json(results, file_path):
+    results.sort(key=lambda r: (-r['score'], r['url']))
+    with open(file_path, "w", encoding="utf-8") as f:
+        for r in results:
+            json.dump(r, f, indent=2)
+            f.write("\n")
+
+def iter_file_lines_skipping_header(fp):
+    first_line = True
+    second_line = True
+    for line in fp:
+        if first_line:
+            first_line = False
             continue
-        if idx % 1000 == 0 or idx == total_lines:
-            print_progress("Reading for sorting:", idx, total_lines)
-    print()
-    objects.sort(key=lambda r: (-r['score'], r['url']))
-    with open(output_file_path, "w", encoding="utf-8") as out:
-        out.write("[\n")
-        for i, obj in enumerate(objects):
-            out.write(json.dumps(obj, indent=2))
-            if i < len(objects) - 1:
-                out.write(",\n")
-            if (i+1) % 1000 == 0 or (i+1) == len(objects):
-                print_progress("Writing sorted file:", i+1, len(objects))
-        out.write("\n]\n")
-    print()
+        if second_line:
+            second_line = False
+            continue
+        yield line.rstrip('\n')
+
+def merge_sorted_text_chunks(chunk_files, final_out, verbose, use_color):
+    file_iters = []
+    files = []
+    try:
+        for chunk in chunk_files:
+            f = open(chunk, "r", encoding="utf-8")
+            files.append(f)
+            file_iters.append(iter_file_lines_skipping_header(f))
+
+        def wrapped_iter(it):
+            for line in it:
+                score, url, _ = parse_text_line(line)
+                yield ((-score, url), line)
+
+        wrapped_iters = [wrapped_iter(it) for it in file_iters]
+
+        merged_iter = heapq.merge(*wrapped_iters)
+
+        header_line = f"{'Score':<7} {'Status':<7} URL\n"
+        separator_line = "-" * 100 + "\n"
+        final_out.write(header_line)
+        final_out.write(separator_line)
+
+        count = 0
+        for _, line in merged_iter:
+            out_line = line
+            if use_color:
+                score, _, _ = parse_text_line(line)
+                out_line = colorize(line, score, use_color=True)
+            final_out.write(out_line + "\n")
+            count += 1
+            if count % 1000 == 0:
+                print_progress("Writing merged output:", count, "?")
+    finally:
+        for f in files:
+            f.close()
+
+def merge_sorted_json_chunks(chunk_files, final_out):
+    fps = [open(cf, "r", encoding="utf-8") for cf in chunk_files]
+
+    def gen_file(fp, i):
+        for line in fp:
+            try:
+                obj = json.loads(line.strip())
+                key = (-obj['score'], obj['url'])
+                yield (key, obj, i)
+            except Exception:
+                continue
+
+    gens = [gen_file(fp, idx) for idx, fp in enumerate(fps)]
+
+    heap = []
+    for idx, g in enumerate(gens):
+        try:
+            item = next(g)
+            heap.append(item)
+        except StopIteration:
+            pass
+    heapq.heapify(heap)
+
+    final_out.write("[\n")
+    first = True
+    count = 0
+    while heap:
+        key, obj, idx = heapq.heappop(heap)
+        if not first:
+            final_out.write(",\n")
+        else:
+            first = False
+        json.dump(obj, final_out, indent=2)
+        count += 1
+        if count % 1000 == 0:
+            print_progress("Writing merged output:", count, "?")
+        try:
+            item = next(gens[idx])
+            heapq.heappush(heap, item)
+        except StopIteration:
+            continue
+    final_out.write("\n]\n")
+
+    for fp in fps:
+        fp.close()
 
 def main():
     print(ASCII_BANNER)
@@ -313,7 +384,7 @@ def main():
     parser.add_argument("--output", help="Write output to specified file path instead of stdout.")
     parser.add_argument("--follow-redirects", action="store_true", help="Follow HTTP redirects on requests (default: not followed).")
     parser.add_argument("--user-agent", default="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0.0.0 Safari/537.36", help="Custom User-Agent header (default: %(default)s).")
-    parser.add_argument("--batch-size", type=int, default=None, help="Number of URLs to process per batch; enables batched and memory-efficient mode. Omit for classic mode.")
+    parser.add_argument("--batch-size", type=int, default=None, help="Number of URLs to process in each batch; enables memory-efficient external merge sort mode.")
 
     args = parser.parse_args()
     load_config(args.config)
@@ -327,7 +398,7 @@ def main():
 
     print_settings_feedback(args, len(urls))
     use_reqs = not args.no_reqs
-    use_color = not args.no_color and not args.output and not args.json
+    use_color = not args.no_color
 
     # ----------- CLASSIC MODE -----------
     if args.batch_size is None:
@@ -366,84 +437,71 @@ def main():
             print_header(args.verbose, use_color, output_file=output_file)
             output_results_batch(all_results, args.verbose, use_color, output_file=output_file)
             if output_file: output_file.close()
+        # New line before final message to ensure no line overwrite with carriage return
+        print()
+        print(GREEN + "[*] All done.\n" + RESET)
+        return
 
-    # ----------- BATCHED MODE -----------
-    else:
-        # Output to temp file first
-        temp_output = tempfile.NamedTemporaryFile(mode='w+', encoding='utf-8', delete=False)
-        batch_size = args.batch_size
-        executor = ThreadPoolExecutor(max_workers=args.threads)
-        total_urls = len(urls)
-        processed_url_count = 0
+    # ----------- BATCHED MODE WITH EXTERNAL MERGE SORT -----------
+    batch_size = args.batch_size
+    total_urls = len(urls)
+    executor = ThreadPoolExecutor(max_workers=args.threads)
+    processed_url_count = 0
+    sorted_chunk_files = []
 
-        # Write header if not JSON
-        if not args.json:
-            temp_output.write(f"{'Score':<7} {'Status':<7} URL\n")
-            temp_output.write("-" * 100 + "\n")
-
-        for i in range(0, total_urls, batch_size):
-            batch_urls = urls[i:i + batch_size]
-            futures = []
-            for u in batch_urls:
-                futures.append(executor.submit(process_url, u, use_reqs, args.user_agent, args.follow_redirects))
-            batch_results = []
-            for idx, future in enumerate(as_completed(futures), 1):
-                try:
-                    res = future.result()
-                    if res["score"] >= args.min_score and (not args.only_200 or res["status"] == 200):
-                        batch_results.append(res)
-                except Exception as e:
-                    print(f"{RED}[!] Error processing URL: {e}{RESET}", file=sys.stderr)
-                processed_url_count += 1
+    for i in range(0, total_urls, batch_size):
+        batch_urls = urls[i:i + batch_size]
+        futures = [executor.submit(process_url, u, use_reqs, args.user_agent, args.follow_redirects) for u in batch_urls]
+        batch_results = []
+        for idx, future in enumerate(as_completed(futures), 1):
+            try:
+                res = future.result()
+                if res["score"] >= args.min_score and (not args.only_200 or res["status"] == 200):
+                    batch_results.append(res)
+            except Exception as e:
+                print(f"{RED}[!] Error processing URL: {e}{RESET}", file=sys.stderr)
+            processed_url_count += 1
+            if processed_url_count % 1000 == 0 or processed_url_count == total_urls:
                 print_progress("URLs processed:", processed_url_count, total_urls)
-            print()
-            # Write each line immediately as newline-JSON or plain text
-            if args.json:
-                for idx, res in enumerate(batch_results):
-                    out_line = json.dumps(res, indent=2)
-                    if not out_line.endswith("\n"): out_line += "\n"
-                    temp_output.write(out_line)
-            else:
-                output_results_batch(batch_results, args.verbose, use_color=False, output_file=temp_output)
-            temp_output.flush()
-        executor.shutdown(wait=True)
-        temp_output.close()
-        print(f"\n{CYAN}[*] URLs processed! Now sorting output file for global order.{RESET}")
+        print()
 
-        # Now sort the temp output file and write result to proper destination
-        if args.output:
-            output_file_path = args.output
-        else:
-            output_file_path = None  # We'll print to stdout
+        chunk_file = tempfile.NamedTemporaryFile(delete=False, mode='w', encoding='utf-8')
+        chunk_file_path = chunk_file.name
+        chunk_file.close()
 
-        sorted_file = tempfile.NamedTemporaryFile(delete=False, mode='w+', encoding='utf-8')
-        sorted_path = sorted_file.name
-        sorted_file.close()
-
-        # Use appropriate sorter
         if args.json:
-            sort_json_output(temp_output.name, sorted_path)
+            write_sorted_chunk_file_json(batch_results, chunk_file_path)
         else:
-            sort_text_output(temp_output.name, sorted_path)
+            write_sorted_chunk_file_text(batch_results, chunk_file_path, args.verbose)
 
-        # Output sorted results to the final output or stdout
-        with open(sorted_path, "r", encoding="utf-8") as fin:
-            if output_file_path:
-                with open(output_file_path, "w", encoding="utf-8") as fout:
-                    for idx, line in enumerate(fin):
-                        fout.write(line)
-                        if idx and idx % 1000 == 0:
-                            print_progress("Final output (sorted):", idx, processed_url_count)
-                    print()
-            else:
-                for idx, line in enumerate(fin):
-                    print(line, end="")
-                    if idx and idx % 1000 == 0:
-                        print_progress("Final output (sorted):", idx, processed_url_count)
-                print()
-        os.remove(temp_output.name)
-        os.remove(sorted_path)
+        sorted_chunk_files.append(chunk_file_path)
 
+    executor.shutdown(wait=True)
+    print(f"\n{CYAN}[*] All batches processed. Starting merge of {len(sorted_chunk_files)} sorted chunks...{RESET}")
+
+    if args.output:
+        final_output = open(args.output, "w", encoding="utf-8")
+        final_output_is_file = True
+    else:
+        final_output = sys.stdout
+        final_output_is_file = False
+
+    if args.json:
+        merge_sorted_json_chunks(sorted_chunk_files, final_output)
+    else:
+        merge_sorted_text_chunks(sorted_chunk_files, final_output, args.verbose, use_color)
+
+    if final_output_is_file:
+        final_output.close()
+
+    for fpath in sorted_chunk_files:
+        try:
+            os.remove(fpath)
+        except Exception:
+            pass
+
+    # New line before final done message to avoid overwrite with carriage returns from progress
+    print()
     print(GREEN + "[*] All done.\n" + RESET)
 
 if __name__ == "__main__":
