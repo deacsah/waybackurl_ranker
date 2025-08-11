@@ -1,4 +1,4 @@
-# WaybackURL Ranker (waybackurl_ranker.py)
+# WaybackURL Ranker
 
 **Version:** 2.1.2
 
